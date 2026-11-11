@@ -39,4 +39,21 @@ dart run sqflite_common_ffi_web:setup
 flutter test
 flutter analyze
 ```
+
+## Engine dan aset game
+
+Renderer dan animasi runner memakai Flame; logika soal dan input tetap berada
+di Flutter. Efek suara memakai Flame Audio. Paket aset yang digunakan:
+
+- [Kenney Platformer Pack Redux (GitHub mirror)](https://github.com/itsgreggreg/platformer-pack-redux):
+  animasi karakter, CC0; lisensi disertakan.
+- [Kenney Background Elements Remastered](https://kenney.nl/assets/background-elements-redux):
+  awan dan pohon, CC0.
+- [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds):
+  efek UI, koin, dan tabrakan, CC0.
+- [Fredoka](https://github.com/google/fonts/tree/main/ofl/fredoka):
+  font game, SIL Open Font License.
+
+Asset diunduh melalui CLI dan hanya file yang dipakai yang dibundel. Salinan
+lisensi ada di `assets/licenses/`.
 "# Game-flutter-run" 

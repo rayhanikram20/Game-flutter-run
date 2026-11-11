@@ -2,7 +2,7 @@ enum GameState { start, running, quiz, gameOver }
 
 enum Phase { early, mid, high }
 
-enum ObstacleType { lowBar, highBar, train }
+enum ObstacleType { lowBar, highBar, train, coin }
 
 class Question {
   final int? id;

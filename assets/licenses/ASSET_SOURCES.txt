@@ -1,0 +1,15 @@
+Kenney Platformer Pack Redux — CC0 1.0
+https://kenney.nl/assets/platformer-pack-redux
+License: Platformer-Pack-Redux-CC0.txt
+
+Kenney Background Elements Remastered — CC0 1.0
+https://kenney.nl/assets/background-elements-redux
+License: Background-Elements-Remastered-CC0.txt
+
+Kenney Interface Sounds — CC0 1.0
+https://kenney.nl/assets/interface-sounds
+License: Interface-Sounds-CC0.txt
+
+Fredoka — SIL Open Font License 1.1
+https://github.com/google/fonts/tree/main/ofl/fredoka
+License: ../fonts/Fredoka-OFL.txt

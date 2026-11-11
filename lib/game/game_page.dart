@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
+import 'package:flame/game.dart';
+import 'package:flame_audio/flame_audio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'game_models.dart';
 import 'game_painter.dart';
+import 'runner_flame_game.dart';
 import 'game_widgets.dart';
 import 'data/question_repository.dart';
 
@@ -18,10 +22,9 @@ class GamePage extends StatefulWidget {
   State<GamePage> createState() => _GamePageState();
 }
 
-class _GamePageState extends State<GamePage>
-    with SingleTickerProviderStateMixin {
-  static const ink = Color(0xff1a1f4d), blue = Color(0xff1e90ff);
-  late final AnimationController ticker;
+class _GamePageState extends State<GamePage> {
+  static const ink = Color(0xff0a0620), blue = Color(0xff00e5ff);
+  late final RunnerFlameGame flameGame;
   late final QuestionSource repository;
   final rng = math.Random();
   List<Question> questionBank = [];
@@ -30,9 +33,11 @@ class _GamePageState extends State<GamePage>
   GameState state = GameState.start;
   Phase phase = Phase.early;
   int score = 0, tier = 1, strikes = 0, streak = 0;
+  int coins = 0;
   double speed = .007, baseSpeed = .007, distance = 0, quizAt = .35, scroll = 0;
   double playerX = 1, jumpY = 0, vy = 0, animationTime = 0;
-  int lane = 1, crouchTicks = 0, invTicks = 0;
+  int lane = 1;
+  double crouchTimer = 0, invTimer = 0;
   final obstacles = <Obstacle>[];
   final failed = <Question>[];
   bool gate = false;
@@ -42,15 +47,28 @@ class _GamePageState extends State<GamePage>
   Timer? quizTimer;
   String feedback = '';
   int selected = -1;
-  Offset? pointerStart;
+  late final GamePainter scenePainter;
+  double _uiRefreshElapsed = 0;
+  bool _uiUpdateScheduled = false;
 
   @override
   void initState() {
     super.initState();
     repository = widget.repository ?? QuestionRepository();
-    ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
-      ..addListener(_frame)
-      ..repeat();
+    flameGame = RunnerFlameGame()..onTick = _frame;
+    scenePainter = GamePainter(
+      scroll: scroll,
+      playerX: playerX,
+      animationTime: animationTime,
+      running: false,
+      jumpY: jumpY,
+      crouch: false,
+      invincible: false,
+      obstacles: obstacles,
+      gate: false,
+      gateZ: 1,
+    );
+    flameGame.updateScene(scenePainter);
     _loadQuestions();
   }
 
@@ -78,43 +96,65 @@ class _GamePageState extends State<GamePage>
   @override
   void dispose() {
     quizTimer?.cancel();
-    ticker.dispose();
     super.dispose();
   }
 
-  void _frame() {
+  void _frame(double dt) {
     if (!mounted) return;
     if (state == GameState.running) {
-      animationTime += 1 / 60;
-      playerX += (lane - playerX) * .25;
+      final frames = (dt * 60).clamp(0.0, 3.0);
+      animationTime += dt;
+      playerX += (lane - playerX) * (1 - math.pow(.75, frames)).toDouble();
       if (jumpY < 0 || vy < 0) {
-        jumpY += vy;
-        vy += .85;
+        jumpY += vy * frames;
+        vy += .85 * frames;
         if (jumpY >= 0) {
           jumpY = 0;
           vy = 0;
         }
       }
-      if (crouchTicks > 0) crouchTicks--;
-      if (invTicks > 0) invTicks--;
-      speed += .0000015;
-      distance += speed;
-      scroll += speed * 1.8;
+      crouchTimer = math.max(0, crouchTimer - dt).toDouble();
+      invTimer = math.max(0, invTimer - dt).toDouble();
+      speed += .0000015 * frames;
+      distance += speed * frames;
+      scroll += speed * 1.8 * frames;
       final pro = phase == Phase.high || streak >= 4;
-      if (rng.nextDouble() < (pro ? .025 : .012) &&
-          obstacles.length < (pro ? 4 : 2)) {
+      final hazardCount = obstacles
+          .where((obstacle) => obstacle.type != ObstacleType.coin)
+          .length;
+      if (rng.nextDouble() < (pro ? .025 : .012) * frames &&
+          hazardCount < (pro ? 4 : 2)) {
         _spawn();
+      }
+      final activeCoins = obstacles
+          .where((obstacle) => obstacle.type == ObstacleType.coin)
+          .length;
+      if (activeCoins < 3 && rng.nextDouble() < .003 * frames) {
+        _spawnCoins();
       }
       if (distance >= quizAt && !gate) gate = true;
       for (final o in List<Obstacle>.from(obstacles)) {
-        o.z -= speed * 1.8;
-        if (o.z <= .12 &&
-            o.z >= 0 &&
-            (playerX - o.lane).abs() < .45 &&
-            invTicks == 0) {
+        o.z -= speed * 1.8 * frames;
+        if (o.z <= .12 && o.z >= 0 && (playerX - o.lane).abs() < .45) {
+          if (o.type == ObstacleType.coin) {
+            coins++;
+            score += 25;
+            _playSound('coin_pickup.ogg');
+            // Trigger coin burst particle at coin position
+            final sz = flameGame.size;
+            final coinPos = scenePainter.pos(
+              ui.Size(sz.x, sz.y),
+              o.lane.toDouble(),
+              o.z,
+            );
+            flameGame.spawnCoinBurst(coinPos);
+            obstacles.remove(o);
+            continue;
+          }
+          if (invTimer > 0) continue;
           var hit = true;
           if (o.type == ObstacleType.lowBar && jumpY < -22) hit = false;
-          if (o.type == ObstacleType.highBar && crouchTicks > 0) hit = false;
+          if (o.type == ObstacleType.highBar && crouchTimer > 0) hit = false;
           if (hit) {
             _strike();
             obstacles.remove(o);
@@ -129,21 +169,52 @@ class _GamePageState extends State<GamePage>
           _openQuiz();
         }
       }
+      _syncScene();
+      _requestUiRefresh(dt);
     } else if (state == GameState.start) {
-      scroll += .01;
+      scroll = (scroll + .6 * dt) % 1;
+      _syncScene();
+      _requestUiRefresh(dt);
     }
-    setState(() {});
+  }
+
+  void _syncScene() {
+    scenePainter
+      ..scroll = scroll
+      ..playerX = playerX
+      ..animationTime = animationTime
+      ..running = state == GameState.running
+      ..jumpY = jumpY
+      ..crouch = crouchTimer > 0
+      ..invincible = invTimer > 0
+      ..gate = gate
+      ..gateZ = 1 - ((distance - quizAt).clamp(0, 1) * 1.8);
+    flameGame.updateScene(scenePainter);
+  }
+
+  void _requestUiRefresh(double dt) {
+    _uiRefreshElapsed += dt;
+    if (_uiRefreshElapsed < 1 / 30 || _uiUpdateScheduled) return;
+
+    _uiRefreshElapsed = 0;
+    _uiUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _uiUpdateScheduled = false;
+      if (mounted) setState(() {});
+    });
   }
 
   void _start() {
     if (questionsLoading || questionLoadError != null || questionBank.isEmpty) {
       return;
     }
+    _playSound('ui_click.ogg');
     quizTimer?.cancel();
     setState(() {
       state = GameState.running;
       phase = Phase.early;
       score = 0;
+      coins = 0;
       tier = 1;
       strikes = 0;
       streak = 0;
@@ -155,39 +226,49 @@ class _GamePageState extends State<GamePage>
       playerX = 1;
       jumpY = 0;
       vy = 0;
-      crouchTicks = 0;
-      invTicks = 0;
+      crouchTimer = 0;
+      invTimer = 0;
       obstacles.clear();
       failed.clear();
       gate = false;
       feedback = '';
       selected = -1;
     });
+    _syncScene();
   }
 
   void _left() {
-    if (state == GameState.running && lane > 0) setState(() => lane--);
+    if (state == GameState.running && lane > 0) {
+      setState(() => lane--);
+      _syncScene();
+    }
   }
 
   void _right() {
-    if (state == GameState.running && lane < 2) setState(() => lane++);
+    if (state == GameState.running && lane < 2) {
+      setState(() => lane++);
+      _syncScene();
+    }
   }
 
   void _jump() {
     if (state == GameState.running && jumpY == 0) {
+      _playSound('jump.ogg');
       setState(() {
         vy = -14;
-        crouchTicks = 0;
+        crouchTimer = 0;
       });
+      _syncScene();
     }
   }
 
   void _slide() {
     if (state == GameState.running) {
       setState(() {
-        crouchTicks = 35;
+        crouchTimer = .58;
         if (jumpY < 0) vy += 7;
       });
+      _syncScene();
     }
   }
 
@@ -207,6 +288,26 @@ class _GamePageState extends State<GamePage>
       }
     } else {
       obstacles.add(Obstacle(rng.nextInt(3), 1, type, rng.nextInt(3)));
+    }
+  }
+
+  void _spawnCoins() {
+    final availableLanes = List.generate(3, (index) => index)
+        .where(
+          (candidate) => !obstacles.any(
+            (obstacle) =>
+                obstacle.type != ObstacleType.coin &&
+                obstacle.lane == candidate &&
+                obstacle.z > .2 &&
+                obstacle.z < 1.5,
+          ),
+        )
+        .toList();
+    if (availableLanes.isEmpty) return;
+
+    final coinLane = availableLanes[rng.nextInt(availableLanes.length)];
+    for (var index = 0; index < 3; index++) {
+      obstacles.add(Obstacle(coinLane, 1 + index * .12, ObstacleType.coin, 0));
     }
   }
 
@@ -244,17 +345,20 @@ class _GamePageState extends State<GamePage>
     quizTimer?.cancel();
     selected = i;
     if (options[i] == current!.answer) {
+      _playSound('quiz_correct.ogg');
       streak++;
       final gain = tier * 100 + (timeLeft * 10).round();
       score += gain;
       feedback = '✨ BENAR! Combo: ${streak}x';
       _phaseUp();
     } else {
+      _playSound('quiz_wrong.ogg');
       streak = 0;
       feedback = '❌ SALAH! Jawaban: ${current!.answer}';
       _strike(current);
     }
     setState(() {});
+    _syncScene();
     Future.delayed(const Duration(milliseconds: 1100), _resume);
   }
 
@@ -264,6 +368,7 @@ class _GamePageState extends State<GamePage>
     feedback = '⏱ WAKTU HABIS! Jawaban: ${current!.answer}';
     _strike(current);
     setState(() {});
+    _syncScene();
     Future.delayed(const Duration(milliseconds: 1100), _resume);
   }
 
@@ -273,6 +378,7 @@ class _GamePageState extends State<GamePage>
       state = GameState.running;
       quizAt = distance + .35 + rng.nextDouble() * .15;
     });
+    _syncScene();
   }
 
   void _phaseUp() {
@@ -288,23 +394,37 @@ class _GamePageState extends State<GamePage>
   }
 
   void _strike([Question? q]) {
-    if (invTicks > 0) return;
+    if (invTimer > 0) return;
+    if (q == null) _playSound('runner_crash.ogg');
     strikes++;
     streak = 0;
+    flameGame.triggerHitShake();
     if (q != null && !failed.contains(q)) failed.add(q);
     if (strikes >= 2) {
       quizTimer?.cancel();
       state = GameState.gameOver;
     } else {
-      invTicks = 90;
+      invTimer = 1.5;
       speed = math.max(baseSpeed, speed * .85);
+    }
+  }
+
+  void _playSound(String file) {
+    unawaited(_playSoundAsync(file));
+  }
+
+  Future<void> _playSoundAsync(String file) async {
+    try {
+      await FlameAudio.play(file, volume: .7);
+    } catch (error) {
+      debugPrint('Game audio "$file" could not be played: $error');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xff171a45),
+      backgroundColor: const Color(0xff050310),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -345,11 +465,17 @@ class _GamePageState extends State<GamePage>
                 ),
                 child: Container(
                   decoration: BoxDecoration(
-                    border: Border.all(color: ink, width: 4),
-                    color: blue,
+                    border: Border.all(color: blue.withValues(alpha: .6), width: 2),
+                    color: ink,
+                    boxShadow: [
+                      BoxShadow(
+                        color: blue.withValues(alpha: .3),
+                        blurRadius: 20,
+                        spreadRadius: 2,
+                      ),
+                    ],
                   ),
                   child: GestureDetector(
-                    onPanStart: (d) => pointerStart = d.globalPosition,
                     onPanEnd: (d) {
                       final v = d.velocity.pixelsPerSecond;
                       if (v.distance < 100) return;
@@ -381,24 +507,7 @@ class _GamePageState extends State<GamePage>
                     },
                     child: Stack(
                       children: [
-                        Positioned.fill(
-                          child: CustomPaint(
-                            painter: GamePainter(
-                              scroll: scroll,
-                              playerX: playerX,
-                              animationTime: animationTime,
-                              running: state == GameState.running,
-                              jumpY: jumpY,
-                              crouch: crouchTicks > 0,
-                              invincible: invTicks > 0,
-                              obstacles: obstacles,
-                              gate: gate,
-                              gateZ:
-                                  1 - ((distance - quizAt).clamp(0, 1) * 1.8),
-                              phase: phase,
-                            ),
-                          ),
-                        ),
+                        Positioned.fill(child: GameWidget(game: flameGame)),
                         if (state == GameState.running ||
                             state == GameState.quiz)
                           GameHud(
@@ -406,6 +515,7 @@ class _GamePageState extends State<GamePage>
                             phase: phase,
                             streak: streak,
                             strikes: strikes,
+                            coins: coins,
                           ),
                         if (state == GameState.start)
                           GameStartOverlay(
@@ -428,6 +538,7 @@ class _GamePageState extends State<GamePage>
                         if (state == GameState.gameOver)
                           GameOverOverlay(
                             score: score,
+                            coins: coins,
                             tier: tier,
                             failedQuestions: failed,
                             onRestart: _start,

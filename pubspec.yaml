@@ -38,6 +38,8 @@ dependencies:
   sqflite_common_ffi: ^2.4.6
   sqflite_common_ffi_web: ^1.2.2
   path: ^1.9.1
+  flame: ^1.38.2
+  flame_audio: ^2.12.2
 
 dev_dependencies:
   flutter_test:
@@ -60,6 +62,16 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/images/runner/
+    - assets/images/world/
+    - assets/images/ui/
+    - assets/audio/
+
+  fonts:
+    - family: Fredoka
+      fonts:
+        - asset: assets/fonts/Fredoka.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

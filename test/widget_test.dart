@@ -21,6 +21,8 @@ void main() {
       EnglishSpeedRunnerApp(questionRepository: _MemoryQuestionSource()),
     );
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.takeException(), isNull);
 
     expect(find.text('SPEED RUNNER'), findsOneWidget);
     expect(find.text('MAIN!'), findsOneWidget);
@@ -34,6 +36,7 @@ void main() {
 
     await tester.tapAt(const Offset(220, 200));
     await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 }

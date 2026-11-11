@@ -4,11 +4,15 @@ import 'package:flutter/material.dart';
 
 import 'game_models.dart';
 
-class GamePainter extends CustomPainter {
-  final double scroll, playerX, jumpY, gateZ, animationTime;
-  final bool crouch, invincible, gate, running;
+/// GamePainter is now a pure **data/position model** – no Canvas drawing except
+/// for the road geometry, gate banner, and fallback shapes used when sprites
+/// aren't yet loaded. All background scenery is handled by _ParallaxBg in
+/// runner_flame_game.dart.
+class GamePainter {
+  double scroll, playerX, jumpY, gateZ, animationTime;
+  bool crouch, invincible, gate, running;
   final List<Obstacle> obstacles;
-  final Phase phase;
+
   GamePainter({
     required this.scroll,
     required this.playerX,
@@ -20,9 +24,14 @@ class GamePainter extends CustomPainter {
     required this.obstacles,
     required this.gate,
     required this.gateZ,
-    required this.phase,
   });
+
   static const ink = Color(0xff1a1f4d);
+
+  // ── Coordinate helpers ───────────────────────────────────────────────────
+
+  Offset playerAnchor(Size size) => pos(size, playerX, 0) + Offset(0, jumpY);
+
   Offset pos(Size s, double lane, double z) {
     final k = math.max(.05, 1 - z);
     return Offset(
@@ -31,157 +40,82 @@ class GamePainter extends CustomPainter {
     );
   }
 
-  @override
-  void paint(Canvas c, Size s) {
+  // ── Road-only paint (called by _RunnerTrack) ─────────────────────────────
+
+  /// Draws only the 3D road perspective, rail markings, and gate.
+  /// Background scenery is handled by _ParallaxBg.
+  void paintRoad(Canvas c, Size s) {
     final vy = s.height * .32;
-    final sky = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xff26a5f8), Color(0xffa4e2ff)],
-      ).createShader(Rect.fromLTWH(0, 0, s.width, vy));
-    c.drawRect(Rect.fromLTWH(0, 0, s.width, vy), sky);
-    _drawCloud(c, s, s.width * .64, s.height * .15, 1);
-    _drawCloud(c, s, s.width * .14, s.height * .095, .62);
-    _drawCity(c, s, vy);
+
+    // Ground fill below horizon
     c.drawRect(
       Rect.fromLTWH(0, vy, s.width, s.height - vy),
-      Paint()..color = const Color(0xffcdb999),
+      Paint()..color = const Color(0xff1a1424),
     );
+
+    // Road trapezoid
     final road = Path()
       ..moveTo(s.width * .49, vy)
       ..lineTo(s.width * 1.02, s.height)
       ..lineTo(-s.width * .02, s.height)
       ..close();
-    c.drawPath(road, Paint()..color = const Color(0xff8f7f6e));
-    _drawSideBuildings(c, s, vy);
-    for (var i = 0; i < 22; i++) {
-      final z = ((i * .065 - scroll) % 1.45 + 1.45) % 1.45 - .3;
-      final a = pos(s, -.55, z), b = pos(s, 2.55, z);
-      c.drawLine(
-        a,
-        b,
-        Paint()
-          ..color = const Color(0xff5d422f)
-          ..strokeWidth = math.max(2, 12 * (1 - z)),
-      );
-      c.drawLine(
-        a.translate(0, -2),
-        b.translate(0, -2),
-        Paint()
-          ..color = const Color(0x668d765f)
-          ..strokeWidth = math.max(1, 2 * (1 - z)),
-      );
-    }
-    const railBottom = [.09, .24, .44, .58, .78, .92];
-    for (var i = 0; i < railBottom.length; i++) {
-      final bottom = Offset(s.width * railBottom[i], s.height + 5);
-      final top = Offset(s.width * (.48 + i * .008), vy + 8);
-      c.drawLine(
-        top,
-        bottom,
-        Paint()
-          ..color = ink
-          ..strokeWidth = 5,
-      );
-      c.drawLine(
-        top,
-        bottom,
-        Paint()
-          ..color = const Color(0xffe6eaf4)
-          ..strokeWidth = 2.5,
-      );
-      c.drawLine(
-        top.translate(-2, 0),
-        bottom.translate(-2, 0),
-        Paint()
-          ..color = const Color(0xff8c9bb2)
-          ..strokeWidth = 1,
-      );
-    }
-    if (gate) _gate(c, s, gateZ);
-    final sorted = [...obstacles]..sort((a, b) => b.z.compareTo(a.z));
-    for (final o in sorted) {
-      _obstacle(c, s, o);
-    }
-    if (!(invincible &&
-        DateTime.now().millisecondsSinceEpoch ~/ 120 % 2 == 0)) {
-      _player(c, s);
-    }
-  }
+    c.drawPath(
+      road,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xff2a1e3a), Color(0xff0d0d1a)],
+        ).createShader(Rect.fromLTWH(0, vy, s.width, s.height - vy)),
+    );
 
-  void _drawCloud(Canvas c, Size s, double x, double y, double scale) {
-    final cloud = Paint()..color = const Color(0xddffffff);
-    c.drawOval(
-      Rect.fromCenter(
-        center: Offset(x, y),
-        width: 48 * scale,
-        height: 42 * scale,
-      ),
-      cloud,
-    );
-    c.drawOval(
-      Rect.fromCenter(
-        center: Offset(x - 27 * scale, y + 7 * scale),
-        width: 42 * scale,
-        height: 34 * scale,
-      ),
-      cloud,
-    );
-    c.drawOval(
-      Rect.fromCenter(
-        center: Offset(x + 27 * scale, y + 7 * scale),
-        width: 42 * scale,
-        height: 34 * scale,
-      ),
-      cloud,
-    );
-  }
+    // Neon lane dividers (3 lanes × 2 rails each)
+    for (var lane = 0; lane < 3; lane++) {
+      for (final offset in [-.32, .32]) {
+        final top = pos(s, lane + offset, .98).translate(0, 7);
+        final bottom = pos(s, lane + offset, 0).translate(0, 5);
 
-  void _drawCity(Canvas c, Size s, double horizon) {
-    for (var i = -2; i < 10; i++) {
-      final x = i * .18 * s.width;
-      final width = s.width * (.12 + (i.abs() % 3) * .015);
-      final height = s.height * (.07 + ((i * 7).abs() % 6) * .014);
-      final top = horizon - height;
-      final building = Rect.fromLTWH(x, top, width, height);
-      c.drawRect(
-        building.shift(Offset(s.width * .008, 0)),
-        Paint()..color = const Color(0x223d78a3),
-      );
-      c.drawRect(building, Paint()..color = const Color(0x665c9fca));
-      c.drawRect(
-        Rect.fromLTWH(x, top, width, s.height * .008),
-        Paint()..color = const Color(0x5586c5e8),
-      );
-      final windowPaint = Paint()..color = const Color(0x335278a2);
-      for (var row = 0; row < 3; row++) {
-        final windowY = top + s.height * (.018 + row * .022);
-        if (windowY + s.height * .008 < horizon) {
-          c.drawRect(
-            Rect.fromLTWH(
-              x + width * .18,
-              windowY,
-              width * .16,
-              s.height * .008,
-            ),
-            windowPaint,
-          );
-          c.drawRect(
-            Rect.fromLTWH(
-              x + width * .58,
-              windowY,
-              width * .16,
-              s.height * .008,
-            ),
-            windowPaint,
-          );
-        }
+        // Outer glow
+        c.drawLine(
+          top,
+          bottom,
+          Paint()
+            ..color = const Color(0x3300e5ff)
+            ..strokeWidth = 14
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+        );
+        // Core line
+        c.drawLine(
+          top,
+          bottom,
+          Paint()
+            ..color = const Color(0xff00e5ff)
+            ..strokeWidth = 2.5,
+        );
       }
     }
+
+    // Animated road stripes scrolling toward viewer
+    final travel = (scroll * 1.6) % 1.0;
+    final stripePaint = Paint()
+      ..color = const Color(0x55ffffff)
+      ..strokeWidth = 1.5;
+    for (var i = 0; i < 20; i++) {
+      final z = ((i * .07 - travel) % 1.4 + 1.4) % 1.4 - .3;
+      if (z < 0 || z > 1) continue;
+      final a = pos(s, .01, z), b = pos(s, 1.99, z);
+      c.drawLine(a, b, stripePaint..strokeWidth = math.max(1.0, 8 * (1 - z)));
+    }
+
+    // Side walls with neon panels
+    _drawNeonSideWalls(c, s, vy);
+
+    if (gate) _gate(c, s, gateZ);
   }
 
-  void _drawSideBuildings(Canvas c, Size s, double horizon) {
+  // ── Neon side walls ──────────────────────────────────────────────────────
+
+  void _drawNeonSideWalls(Canvas c, Size s, double horizon) {
     final leftWall = Path()
       ..moveTo(0, horizon * .6)
       ..lineTo(s.width * .49, horizon)
@@ -194,18 +128,21 @@ class GamePainter extends CustomPainter {
       ..lineTo(s.width * .93, s.height)
       ..lineTo(s.width, s.height)
       ..close();
-    c.drawPath(leftWall, Paint()..color = const Color(0xffb9a17f));
-    c.drawPath(rightWall, Paint()..color = const Color(0xffb9a17f));
+
+    // Dark wall base
+    c.drawPath(leftWall, Paint()..color = const Color(0xff120a1f));
+    c.drawPath(rightWall, Paint()..color = const Color(0xff120a1f));
 
     Path polygon(List<Offset> points) {
       final path = Path()
         ..moveTo(points.first.dx * s.width, points.first.dy * s.height);
-      for (final point in points.skip(1)) {
-        path.lineTo(point.dx * s.width, point.dy * s.height);
+      for (final p in points.skip(1)) {
+        path.lineTo(p.dx * s.width, p.dy * s.height);
       }
       return path..close();
     }
 
+    // Neon panels – cyberpunk color palette
     final panels = <(List<Offset>, Color)>[
       (
         [
@@ -214,7 +151,7 @@ class GamePainter extends CustomPainter {
           const Offset(.09, .69),
           const Offset(0, .80),
         ],
-        const Color(0xffffd260),
+        const Color(0xffff00aa),
       ),
       (
         [
@@ -223,7 +160,7 @@ class GamePainter extends CustomPainter {
           const Offset(.27, .55),
           const Offset(.09, .71),
         ],
-        const Color(0xffed7198),
+        const Color(0xff00e5ff),
       ),
       (
         [
@@ -232,16 +169,7 @@ class GamePainter extends CustomPainter {
           const Offset(.43, .39),
           const Offset(.26, .56),
         ],
-        const Color(0xfff3a24e),
-      ),
-      (
-        [
-          const Offset(.43, .28),
-          const Offset(.47, .30),
-          const Offset(.47, .36),
-          const Offset(.43, .34),
-        ],
-        const Color(0xffffc928),
+        const Color(0xff9b59ff),
       ),
       (
         [
@@ -250,7 +178,7 @@ class GamePainter extends CustomPainter {
           const Offset(.91, .69),
           const Offset(1, .80),
         ],
-        const Color(0xffb48cdb),
+        const Color(0xff00ff88),
       ),
       (
         [
@@ -259,7 +187,7 @@ class GamePainter extends CustomPainter {
           const Offset(.73, .55),
           const Offset(.91, .71),
         ],
-        const Color(0xff79cd85),
+        const Color(0xffff6600),
       ),
       (
         [
@@ -268,35 +196,17 @@ class GamePainter extends CustomPainter {
           const Offset(.57, .39),
           const Offset(.74, .56),
         ],
-        const Color(0xff68afe8),
-      ),
-      (
-        [
-          const Offset(.57, .28),
-          const Offset(.53, .30),
-          const Offset(.53, .36),
-          const Offset(.57, .34),
-        ],
-        const Color(0xffbd83d4),
+        const Color(0xfff0ff00),
       ),
     ];
-    for (final (points, color) in panels) {
-      final shape = polygon(points);
-      c.drawPath(shape, Paint()..color = color);
-      c.drawPath(
-        shape,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.5
-          ..color = ink,
-      );
-    }
 
+    // Animated scroll motion on walls
     final travel = (scroll * 1.4) % .18;
     final motion = Paint()
-      ..color = const Color(0x44764f32)
+      ..color = const Color(0x3300e5ff)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.square;
+
     for (var side = 0; side < 2; side++) {
       c.save();
       c.clipPath(side == 0 ? leftWall : rightWall);
@@ -306,7 +216,7 @@ class GamePainter extends CustomPainter {
         final innerX = side == 0
             ? s.width * (.49 - .42 * depth)
             : s.width * (.51 + .42 * depth);
-        motion.strokeWidth = math.max(3, s.width * (.012 + .026 * depth));
+        motion.strokeWidth = math.max(2, s.width * (.01 + .022 * depth));
         if (side == 0) {
           c.drawLine(
             Offset(-s.width * .06, y),
@@ -324,77 +234,125 @@ class GamePainter extends CustomPainter {
       c.restore();
     }
 
-    final leftWindow = polygon([
-      const Offset(.14, .43),
-      const Offset(.20, .41),
-      const Offset(.20, .46),
-      const Offset(.14, .48),
-    ]);
-    final rightWindow = polygon([
-      const Offset(.86, .43),
-      const Offset(.80, .41),
-      const Offset(.80, .46),
-      const Offset(.86, .48),
-    ]);
-    c.drawPath(leftWindow, Paint()..color = const Color(0xfff23b83));
-    c.drawPath(rightWindow, Paint()..color = const Color(0xff22c878));
-    final windowBorder = Paint()
+    for (final (points, color) in panels) {
+      final shape = polygon(points);
+      // Glow effect
+      c.drawPath(
+        shape,
+        Paint()
+          ..color = color.withValues(alpha: .25)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+      );
+      // Solid fill (semi-transparent)
+      c.drawPath(shape, Paint()..color = color.withValues(alpha: .55));
+      // Neon border
+      c.drawPath(
+        shape,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0
+          ..color = color,
+      );
+    }
+
+    // Wall outlines
+    final wallBorder = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = ink;
-    c.drawPath(leftWindow, windowBorder);
-    c.drawPath(rightWindow, windowBorder);
-    c.drawPath(
-      leftWall,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = ink,
-    );
-    c.drawPath(
-      rightWall,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = ink,
-    );
+      ..strokeWidth = 2.5
+      ..color = const Color(0x8800e5ff);
+    c.drawPath(leftWall, wallBorder);
+    c.drawPath(rightWall, wallBorder);
   }
+
+  // ── Gate banner ──────────────────────────────────────────────────────────
 
   void _gate(Canvas c, Size s, double z) {
     final a = pos(s, -.62, z),
         b = pos(s, 2.62, z),
         k = math.max(.05, 1 - z),
         h = 130 * k;
+
+    // Posts
+    final postPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [const Color(0xff00e5ff), const Color(0xff0055ff)],
+      ).createShader(
+        Rect.fromLTWH(a.dx - 5, a.dy - h, 10, h),
+      );
+    c.drawRect(Rect.fromLTWH(a.dx - 7 * k, a.dy - h, 14 * k, h), postPaint);
+    c.drawRect(Rect.fromLTWH(b.dx - 7 * k, b.dy - h, 14 * k, h), postPaint);
+
+    // Banner
+    final bannerRect = Rect.fromLTWH(a.dx, a.dy - h, b.dx - a.dx, 44 * k);
     c.drawRect(
-      Rect.fromLTWH(a.dx - 5, a.dy - h, 10, h),
-      Paint()..color = const Color(0xffffc928),
+      bannerRect,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Color(0xff9b00ff), Color(0xff00e5ff)],
+        ).createShader(bannerRect),
     );
+
+    // Glow on banner
     c.drawRect(
-      Rect.fromLTWH(b.dx - 5, b.dy - h, 10, h),
-      Paint()..color = const Color(0xffffc928),
+      bannerRect,
+      Paint()
+        ..color = const Color(0x4400e5ff)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
     );
-    c.drawRect(
-      Rect.fromLTWH(a.dx, a.dy - h, b.dx - a.dx, 40 * k),
-      Paint()..color = const Color(0xffff3d8b),
-    );
+
     final tp = TextPainter(
       text: TextSpan(
         text: '★ ENGLISH QUIZ ★',
         style: TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w900,
-          fontSize: math.max(8, 19 * k),
+          fontSize: math.max(8, 20 * k),
+          shadows: const [Shadow(color: Color(0xff00e5ff), blurRadius: 8)],
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(c, Offset((s.width - tp.width) / 2, a.dy - h + 8 * k));
+    tp.paint(c, Offset((s.width - tp.width) / 2, a.dy - h + 10 * k));
   }
 
-  void _obstacle(Canvas c, Size s, Obstacle o) {
-    final p = pos(s, o.lane.toDouble(), o.z),
-        k = math.max(.05, 1 - o.z),
-        w = 74 * k;
+  // ── Fallback sprite painters (used if sprite not loaded yet) ────────────
+
+  void paintCoin(Canvas c, Size s, Obstacle o) {
+    final p = pos(s, o.lane.toDouble(), o.z);
+    final k = math.max(.05, 1 - o.z);
+    final center = Offset(p.dx, p.dy - 25 * k);
+    final radius = math.max(5.0, 17 * k);
+    final squeeze = math.max(
+      .22,
+      math.cos(animationTime * 5 + o.z * 7).abs(),
+    );
+    c.drawCircle(
+      center.translate(0, radius * .14),
+      radius * 1.22,
+      Paint()..color = const Color(0x55ffb000),
+    );
+    c.save();
+    c.translate(center.dx, center.dy);
+    c.scale(squeeze, 1);
+    c.drawCircle(Offset.zero, radius, Paint()..color = const Color(0xffffc928));
+    c.drawCircle(
+      Offset.zero,
+      radius,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.5, 3 * k)
+        ..color = ink,
+    );
+    c.restore();
+  }
+
+  void paintObstacle(Canvas c, Size s, Obstacle o) {
+    final p = pos(s, o.lane.toDouble(), o.z);
+    final k = math.max(.05, 1 - o.z);
+    final w = 74 * k;
+
     if (o.type == ObstacleType.train) {
       final colors = [
         const Color(0xffff7a1a),
@@ -409,24 +367,13 @@ class GamePainter extends CustomPainter {
         ),
         Radius.circular(7 * k),
       );
-      c.drawRRect(r, Paint()..color = colors[o.color]);
+      c.drawRRect(r, Paint()..color = colors[o.color % 3]);
       c.drawRRect(
         r,
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3 * k
           ..color = ink,
-      );
-      c.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: Offset(p.dx, p.dy - 65 * k),
-            width: w * .68,
-            height: 25 * k,
-          ),
-          Radius.circular(4 * k),
-        ),
-        Paint()..color = const Color(0xffbfe9ff),
       );
     } else if (o.type == ObstacleType.lowBar) {
       final r = Rect.fromCenter(
@@ -464,78 +411,4 @@ class GamePainter extends CustomPainter {
       );
     }
   }
-
-  void _player(Canvas c, Size s) {
-    final runPhase = animationTime * 12;
-    final stride = running ? math.sin(runPhase) : 0.0;
-    final forward = running ? math.sin(runPhase).abs() : 0.0;
-    final ground = pos(s, playerX, 0);
-    final bob = running ? math.sin(runPhase * 2).abs() * 4 : 0.0;
-    final p = ground + Offset(0, jumpY - bob + (jumpY == 0 ? forward * 2 : 0));
-
-    c.drawOval(
-      Rect.fromCenter(
-        center: Offset(ground.dx, ground.dy - 2),
-        width: 30 + forward * 7,
-        height: 7 + forward * 1.5,
-      ),
-      Paint()..color = const Color(0x660d1538),
-    );
-    c.save();
-    c.translate(p.dx, p.dy);
-    final bodyScale = 1 + forward * .065;
-    c.scale(bodyScale, bodyScale);
-    c.rotate(-.035 - stride * .025);
-    if (crouch) c.scale(1.15, .62);
-    final stroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
-      ..color = ink;
-    void rr(Color color, double x, double y, double w, double h, double r) {
-      final q = RRect.fromRectAndRadius(
-        Rect.fromLTWH(x, y, w, h),
-        Radius.circular(r),
-      );
-      c.drawRRect(q, Paint()..color = color);
-      c.drawRRect(q, stroke);
-    }
-
-    final legSwing = running ? stride * .72 : 0.0;
-    for (var side = 0; side < 2; side++) {
-      final direction = side == 0 ? 1.0 : -1.0;
-      c.save();
-      c.translate(side == 0 ? -7 : 7, -18);
-      c.rotate(legSwing * direction);
-      rr(const Color(0xff2b3a8c), -5, 0, 10, 18, 4);
-      rr(Colors.white, -6, 14, 12, 6, 3);
-      c.restore();
-    }
-    rr(const Color(0xff1e90ff), -16, -46, 32, 32, 10);
-    rr(const Color(0xffff7a1a), -10, -42, 20, 22, 6);
-    final armSwing = running ? stride * .62 : 0.0;
-    for (var side = 0; side < 2; side++) {
-      final direction = side == 0 ? 1.0 : -1.0;
-      c.save();
-      c.translate(side == 0 ? -13 : 13, -40);
-      c.rotate(armSwing * direction);
-      rr(const Color(0xff1e90ff), side == 0 ? -9 : 1, 0, 8, 20, 4);
-      c.restore();
-    }
-    c.drawCircle(
-      const Offset(0, -58),
-      13,
-      Paint()..color = const Color(0xfff2b886),
-    );
-    c.drawCircle(const Offset(0, -58), 13, stroke);
-    final cap = Path()
-      ..moveTo(-13, -60)
-      ..quadraticBezierTo(0, -76, 13, -60)
-      ..close();
-    c.drawPath(cap, Paint()..color = const Color(0xffff4545));
-    c.drawPath(cap, stroke);
-    c.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant GamePainter old) => true;
 }
